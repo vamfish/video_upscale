@@ -1,0 +1,80 @@
+# 离线安装包 (过大，需自行下载)
+Downloads/
+
+# AI 模型文件 (过大)
+*.pth
+*.onnx
+*.engine
+video_upscale_project/models/downloaded/
+
+# Python 虚拟环境
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+video_upscale_project/.venv/
+
+# 自动生成的项目文件
+video_upscale_project/pyproject.toml
+env.sh
+
+# 构建产物
+build/
+*.o
+*.so
+*.a
+*.la
+*.lo
+.libs/
+.deps/
+autom4te.cache/
+config.log
+config.status
+Makefile
+Makefile.in
+cmake_install.cmake
+CMakeCache.txt
+CMakeFiles/
+compile
+depcomp
+install-sh
+missing
+ltmain.sh
+libtool
+aclocal.m4
+configure
+stamp-h1
+config.h
+config.h.in
+*.pc
+
+# TensorRT 运行库
+ai_libs/
+
+# 日志
+*.log
+logs/
+setup.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code 本地配置
+.claude/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# VapourSynth 源码 (由脚本自动克隆)
+video_upscale_project/vapoursynth_headers/
+
+# 插件源码 (由脚本自动克隆)
+video_upscale_project/plugins/
+
+# 编译好的插件 (会重新编译)
+video_upscale_project/lib/
