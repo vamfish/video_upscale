@@ -1,32 +1,40 @@
 # 🎬 视频超分环境一键部署
 
-基于 **VapourSynth + TensorRT + RealESRGAN** 的 GPU 视频超分辨率处理环境，支持 WSL2 和原生 Ubuntu LTS。
+基于 **VapourSynth + TensorRT + RealESRGAN** 的 GPU 视频超分辨率处理环境，支持 WSL2 和原生 Ubuntu LTS，已适配 RTX 50 系列 (Blackwell)。
 
 ## 特性
 
-- ✅ **一键部署** — 运行 `setup_video_upscale.sh` 自动完成全部安装
-- ✅ **可移植** — 整个项目目录可复制到任意机器，离线部署
-- ✅ **GPU 加速** — 基于 TensorRT 8.6 + CUDA 12.2 的 FP16 推理引擎
-- ✅ **丰富模型** — 预置 RealESRGAN、Waifu2x、CUGAN、RIFE、DPIR 等多款 ONNX 模型
-- ✅ **模块化** — 支持 `--skip-*` 选项跳过任意步骤
-- ✅ **Dry-run** — 支持 `--dry-run` 预览将执行的操作
+- ✅ **一键部署** — `./setup_video_upscale.sh` 自动完成从 CUDA 到模型引擎的全流程安装
+- ✅ **多 GPU 适配** — 自动检测 GPU 架构 (SM)，匹配最佳 TensorRT/CUDA 版本
+- ✅ **可移植** — 整个目录可复制到任意机器离线部署，无需联网
+- ✅ **自动兼容性检测** — 启动即检查 Downloads/ 中的离线包是否兼容当前 GPU
+- ✅ **环境验证** — `./verify.sh` 一键检查 8 大类 23 项环境指标
+- ✅ **模块化** — 支持 `--skip-*` 和 `--dry-run`，灵活控制部署流程
 
 ## 环境要求
 
 | 组件 | 要求 |
 |------|------|
 | 操作系统 | Ubuntu 22.04 / 24.04 LTS 或 WSL2 |
-| NVIDIA 驱动 | ≥ 525 (支持 CUDA 12.2) |
-| GPU 架构 | ≥ Turing (SM 75)，推荐 Ada (SM 89) |
-| 磁盘空间 | ~20 GB (含离线包和模型) |
+| GPU 架构 | ≥ Turing (SM 75) |
+| NVIDIA 驱动 | ≥ 580 (CUDA 13.x)，或 ≥ 525 (CUDA 12.x) |
+| 磁盘空间 | ~25 GB (含离线包和模型) |
 | 内存 | ≥ 16 GB |
+
+### 已验证 GPU
+
+| GPU | 架构 | SM | 状态 |
+|-----|------|-----|------|
+| RTX 5080 | Blackwell | 120 | ✅ 已验证 |
+| RTX 4090 | Ada Lovelace | 89 | ✅ 兼容 |
+| RTX A5000 | Ampere | 86 | ✅ 兼容 |
 
 ## 快速开始
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/your-username/video-upscale.git
-cd video-upscale
+git clone https://github.com/vamfish/video_upscale.git
+cd video_upscale
 
 # 2. 将离线包放入 Downloads/ 目录（见下方离线部署说明）
 
@@ -39,8 +47,11 @@ cd video-upscale
 # 5. 激活环境
 source env.sh
 
-# 6. 运行视频超分
-vspipe your_script.vpy - | ffmpeg -i - output.mp4
+# 6. 验证环境
+./verify.sh
+
+# 7. 运行视频超分
+uv run vspipe your_script.vpy -c y4m - | ffmpeg -i - output.mp4
 ```
 
 ## 目录结构
@@ -48,22 +59,23 @@ vspipe your_script.vpy - | ffmpeg -i - output.mp4
 ```
 video_upscale/
 ├── setup_video_upscale.sh      # 一键部署脚本
+├── verify.sh                   # 环境验证脚本 (23 项检查)
 ├── env.sh                      # 环境激活脚本（部署后自动生成）
 ├── README.md                   # 本文件
 ├── Downloads/                  # 离线安装包（需自行准备）
-│   ├── cuda-repo-wsl-ubuntu-12-2-local_12.2.0-1_amd64.deb
+│   ├── cuda-repo-wsl-ubuntu-13-3-local_13.3.0-1_amd64.deb
 │   ├── cuda-wsl-ubuntu.pin
-│   ├── TensorRT-8.6.1.6.Linux.x86_64-gnu.cuda-12.0.tar.gz
-│   ├── cudnn-linux-x86_64-8.9.7.29_cuda12-archive.tar.xz
+│   ├── nv-tensorrt-local-repo-ubuntu2404-11.0.0-cuda-13.2_1.0-1_amd64.deb
+│   ├── cudnn-local-repo-ubuntu2404-9.23.0_1.0-1_amd64.deb
 │   └── libtinfo5_6.3-2ubuntu0.1_amd64.deb
 ├── video_upscale_project/      # 项目工作目录
 │   ├── src/                    # Python 脚本
 │   ├── models/                 # AI 模型文件
 │   │   └── downloaded/         # 预下载的 ONNX 模型
-│   ├── plugins/                # VapourSynth 插件源码
+│   ├── plugins/                # VapourSynth 插件源码（部署时自动克隆）
 │   ├── lib/                    # 编译好的 .so 插件
-│   └── vapoursynth_headers/    # VapourSynth 头文件
-└── ai_libs/                    # TensorRT 运行库（部署后生成）
+│   └── vapoursynth_headers/    # VapourSynth 头文件（部署时自动克隆）
+└── ai_libs/                    # TensorRT 运行库（仅旧版 tar 格式）
 ```
 
 ## 命令行选项
@@ -88,8 +100,8 @@ video_upscale/
 ### 常用组合
 
 ```bash
-# 仅重新编译插件（其他已安装）
-./setup_video_upscale.sh --skip-cuda --skip-tensorrt --skip-cudnn --skip-python --skip-deps --skip-models
+# 仅重新编译 vs-mlrt + FFMS2（其他已安装）
+./setup_video_upscale.sh --skip-cuda --skip-tensorrt --skip-cudnn --skip-python --skip-deps --skip-vapoursynth --skip-models
 
 # 仅安装 Python 环境和依赖
 ./setup_video_upscale.sh --skip-cuda --skip-tensorrt --skip-cudnn --skip-vapoursynth --skip-vsmlrt --skip-ffms2 --skip-models
@@ -97,17 +109,39 @@ video_upscale/
 
 ## 离线部署
 
-将以下离线包放入 `Downloads/` 目录即可离线安装：
+将以下离线包放入 `Downloads/` 目录即可离线安装。**三张 GPU (A5000/4090/5080) 共用同一套包**：
 
 | 文件 | 大小 | 下载地址 |
 |------|------|----------|
-| `cuda-repo-wsl-ubuntu-12-2-local_12.2.0-1_amd64.deb` | ~3.2 GB | [NVIDIA CUDA Archive](https://developer.nvidia.com/cuda-12-2-0-download-archive) |
-| `TensorRT-8.6.1.6.Linux.x86_64-gnu.cuda-12.0.tar.gz` | ~1.3 GB | [NVIDIA TensorRT Archive](https://developer.nvidia.com/tensorrt) |
-| `cudnn-linux-x86_64-8.9.7.29_cuda12-archive.tar.xz` | ~700 MB | [NVIDIA cuDNN Archive](https://developer.nvidia.com/cudnn) |
+| `cuda-repo-wsl-ubuntu-13-3-local_13.3.0-1_amd64.deb` | ~3.5 GB | [NVIDIA CUDA Downloads](https://developer.nvidia.com/cuda-downloads) → Linux → x86_64 → WSL-Ubuntu → 13.3 → deb (local) |
+| `nv-tensorrt-local-repo-ubuntu2404-11.0.0-cuda-13.2_1.0-1_amd64.deb` | ~1.5 GB | [NVIDIA TensorRT Downloads](https://developer.nvidia.com/tensorrt/download) |
+| `cudnn-local-repo-ubuntu2404-9.23.0_1.0-1_amd64.deb` | ~800 MB | [NVIDIA cuDNN Downloads](https://developer.nvidia.com/cudnn) |
 | `cuda-wsl-ubuntu.pin` | <1 KB | CUDA WSL 包附带 |
 | `libtinfo5_6.3-2ubuntu0.1_amd64.deb` | ~100 KB | `apt download libtinfo5` |
 
-> **注意**: CUDA 和 cuDNN 下载需要 NVIDIA Developer 账号（免费注册）。
+> **注意**: 全部需要 **NVIDIA Developer 免费账号**（邮箱注册，5 分钟搞定）。脚本启动时自动检测 GPU 架构并验证下载包兼容性。
+
+## 环境验证
+
+部署完成后运行 `./verify.sh`，检查 8 大类 23 项：
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║       视频超分环境验证 v2.1                                  ║
+╠══════════════════════════════════════════════════════════════╣
+║  GPU: NVIDIA GeForce RTX 5080 (SM 120)                     ║
+║  CUDA: 13.3         TensorRT: v11.0.0                      ║
+╚══════════════════════════════════════════════════════════════╝
+
+━━━ 1. NVIDIA GPU & CUDA ━━━     nvidia-smi / nvcc / cuDNN
+━━━ 2. TensorRT ━━━              libnvinfer / trtexec
+━━━ 3. VapourSynth ━━━           libvapoursynth / vspipe
+━━━ 4. Python 环境 ━━━           uv / torch+CUDA / onnx / spandrel / vapoursynth
+━━━ 5. VapourSynth 插件 ━━━      libvstrt.so / libffms2.so
+━━━ 6. AI 模型文件 ━━━           .pth / .onnx / .engine / waifu2x
+━━━ 7. 环境变量 ━━━              TensorRT 库 / CUDA PATH
+━━━ 8. 功能自检 ━━━              uv run vspipe 执行测试
+```
 
 ## 预置模型
 
@@ -132,15 +166,15 @@ video_upscale/
 
 ```
 ┌──────────────────────────────────────────────┐
-│               VapourSynth 脚本 (.vpy)          │
+│           VapourSynth 脚本 (.vpy)              │
 ├──────────────────────────────────────────────┤
 │  FFMS2 (视频源)   │   vs-mlrt (TensorRT 推理)  │
 ├──────────────────────────────────────────────┤
-│          VapourSynth 核心框架 (R70+)           │
+│        VapourSynth 核心框架 (R76+)             │
 ├──────────────────────────────────────────────┤
-│  TensorRT 8.6    │  CUDA 12.2  │  cuDNN 8.9  │
+│  TensorRT 11.0   │  CUDA 13.3  │  cuDNN 9.23 │
 ├──────────────────────────────────────────────┤
-│             NVIDIA GPU (SM 75+)               │
+│          NVIDIA GPU (SM 75-120)               │
 └──────────────────────────────────────────────┘
 ```
 
@@ -167,22 +201,35 @@ clip.set_output()
 
 ```bash
 # 运行
-vspipe upscale_example.vpy -c y4m - | ffmpeg -i - -c:v libx264 -crf 18 output.mp4
+uv run vspipe upscale_example.vpy -c y4m - | ffmpeg -i - -c:v libx264 -crf 18 output.mp4
 ```
+
+## GPU 版本对应关系
+
+脚本自动检测 GPU 并匹配 Downloads/ 中的离线包：
+
+| GPU SM | GPU 系列 | 最低 CUDA | 最低 TensorRT |
+|--------|----------|-----------|---------------|
+| 75-79 | RTX 20 (Turing) | 12.2 | 7.0 |
+| 80-86 | RTX 30/A5000 (Ampere) | 12.2 | 8.0 |
+| 89 | RTX 40 (Ada) | 12.2 | 8.6 |
+| **100-120** | **RTX 50 (Blackwell)** | **12.4** | **10.0** |
+
+> **统一推荐**: CUDA 13.3 + TensorRT 11.0 + cuDNN 9.23 兼容全部 GPU (SM 75-120)
 
 ## FAQ
 
 ### Q: 非 WSL 环境如何安装 CUDA？
 
-非 WSL 环境建议使用 `--skip-cuda` 跳过，手动通过 NVIDIA 官方 runfile 安装 CUDA 12.2。
+非 WSL 环境建议使用 `--skip-cuda` 跳过，手动通过 NVIDIA 官方 runfile 安装。
 
-### Q: GPU 架构不匹配怎么办？
+### Q: 需要换版本怎么办？
 
-修改脚本中 `CMAKE_CUDA_ARCHITECTURES` 为你的 GPU 对应的 SM 版本：
-- RTX 20 系列: 75
-- RTX 30 系列: 86
-- RTX 40 系列: 89
-- RTX 50 系列: 100
+直接下载新版离线包放入 `Downloads/`，脚本自动检测并匹配，无需手动修改变量。
+
+### Q: 三台不同 GPU 的机器能共用同一套包吗？
+
+可以。CUDA 13.3 + TensorRT 11.0 兼容 SM 75-120 全部架构。TensorRT engine 文件会在每台机器上自动根据其 GPU 编译。
 
 ### Q: 部署失败如何排查？
 
@@ -190,8 +237,18 @@ vspipe upscale_example.vpy -c y4m - | ffmpeg -i - -c:v libx264 -crf 18 output.mp
 # 查看完整日志
 cat setup.log
 
-# 查看分步骤日志
+# 查看引擎编译日志
 cat video_upscale_project/logs/engine_build_real.log
+
+# 运行环境验证
+source env.sh && ./verify.sh
+```
+
+### Q: 如何测试性能？
+
+在三台机器上用相同的 `.vpy` 脚本，记录 vspipe 输出的 fps：
+```bash
+uv run vspipe upscale_example.vpy -c y4m --progress .
 ```
 
 ## License
