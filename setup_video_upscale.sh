@@ -936,11 +936,10 @@ else
     rm -rf *
 
     # CUDA 12.2 已知的 SM 上限为 90，超过则使用 90 (驱动会 JIT 编译 PTX)
+    # 使用实际 GPU SM 值编译 (CUDA 13.3 支持 SM 50-120)
+    # RTX 5080=120, RTX 4090=89, RTX A5000=86
     CMAKE_SM="${GPU_SM:-89}"
-    if [ "$CMAKE_SM" -gt 90 ]; then
-        info "GPU SM ${GPU_SM} 超出 CUDA 12.2 支持范围，编译目标设为 SM 90 (运行时由驱动 JIT)"
-        CMAKE_SM=90
-    fi
+    info "vs-mlrt 编译目标: SM ${CMAKE_SM} (${GPU_NAME:-Unknown GPU})"
 
     # TensorRT deb 安装时 lib 在 /usr/lib/x86_64-linux-gnu/
     TRT_LIB_DIR="$TENSORRT_INSTALL_DIR/lib"
@@ -1172,11 +1171,19 @@ cd "$PROJECT_DIR"
 
 # 生成快捷激活脚本 env.sh
 ENV_SH="$SCRIPT_DIR/env.sh"
-cat > "$ENV_SH" << EOF
+cat > "$ENV_SH" << 'ENVHEAD'
 #!/bin/bash
-# 视频超分环境快捷激活脚本
+# 视频超分环境快捷激活脚本 (可重复 source，不会叠加)
 # 用法: source env.sh
 
+if [ -n "${_VUP_ENV_LOADED:-}" ]; then
+    echo "✅ 视频超分环境已激活 (无需重复 source)"
+    return 0
+fi
+ENVHEAD
+
+# 用双引号 heredoc 让变量展开
+cat >> "$ENV_SH" << EOF
 export PATH="$PROJECT_DIR/.venv/bin:\$PATH"
 export PATH="$CUDA_PATH/bin:\$PATH"
 export LD_LIBRARY_PATH="$PROJECT_DIR/lib:\$LD_LIBRARY_PATH"
@@ -1187,9 +1194,12 @@ EOF
 if $TENSORRT_IS_DEB; then
     echo "# TensorRT 已通过 deb 安装到系统路径 (/usr/lib, /usr/bin)" >> "$ENV_SH"
 else
-    echo "export PATH=\"$TENSORRT_INSTALL_DIR/bin:\$PATH\"" >> "$ENV_SH"
     echo "export LD_LIBRARY_PATH=\"$TENSORRT_INSTALL_DIR/lib:\$LD_LIBRARY_PATH\"" >> "$ENV_SH"
 fi
+
+cat >> "$ENV_SH" << 'ENVFOOT'
+export _VUP_ENV_LOADED=1
+ENVFOOT
 
 cat >> "$ENV_SH" << 'ENVEOF'
 

@@ -51,19 +51,39 @@ detect_cuda_ver() {
 }
 detect_trt_ver() {
     if command -v trtexec >/dev/null 2>&1; then
-        trtexec --version 2>&1 | grep -oP 'TensorRT v?\K[\d.]+' | head -1 || echo "???"
+        # trtexec --version 输出: "TensorRT v110000" (11.0.0) 或 "TensorRT v8601" (8.6.1)
+        local raw; raw=$(trtexec --version 2>&1 | grep -oP 'TensorRT v?\K\d+' | head -1 || echo "")
+        if [ -n "$raw" ]; then
+            # 110000 → 11.0.0, 8601 → 8.6.1
+            local maj=$(( raw / 10000 )); local min=$(( (raw % 10000) / 100 )); local pat=$(( raw % 100 ))
+            echo "v${maj}.${min}.${pat}"
+        else
+            echo "???"
+        fi
     else
         echo "???"
     fi
 }
 
+detect_gpu_name() {
+    nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "Unknown"
+}
+detect_gpu_sm() {
+    local cc; cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 || echo "0.0")
+    local maj min; maj=$(echo "$cc" | cut -d. -f1); min=$(echo "$cc" | cut -d. -f2)
+    echo "${maj}${min}"
+}
+
 CUDA_VER=$(detect_cuda_ver)
 TRT_VER=$(detect_trt_ver)
+GPU_NAME=$(detect_gpu_name)
+GPU_SM=$(detect_gpu_sm)
 
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║       视频超分环境验证 v2.0                                  ║"
+echo "║       视频超分环境验证 v2.1                                  ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
-echo "║  检测到: CUDA ${CUDA_VER} | TensorRT ${TRT_VER}"
+printf "║  GPU: %-52s ║\n" "$GPU_NAME (SM ${GPU_SM})"
+printf "║  CUDA: %-11s  TensorRT: %-22s ║\n" "${CUDA_VER}" "${TRT_VER}"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -212,8 +232,8 @@ VSEOF
 
 if command -v uv >/dev/null 2>&1 && [ -f "$PROJECT_DIR/.venv/bin/python3" ]; then
     printf "  %-45s " "uv run vspipe 执行测试"
-    # 先通过 uv 配置 VapourSynth Python 绑定
-    uv run --directory "$PROJECT_DIR" vapoursynth config 2>/dev/null || true
+    # 先通过 uv 配置 VapourSynth Python 绑定 (静默)
+    uv run --directory "$PROJECT_DIR" vapoursynth config >/dev/null 2>&1 || true
     export VAPOURSYNTH_CONF="$HOME/.config/vapoursynth/vapoursynth.toml"
     # 注意: 不要手动设 LD_LIBRARY_PATH! env.sh 已配置好，叠加会导致加载错误的 libvsscript.so
     if uv run --directory "$PROJECT_DIR" vspipe "$TEST_VPY" -c y4m --progress . 2>/dev/null > /dev/null; then
