@@ -212,11 +212,10 @@ VSEOF
 
 if command -v uv >/dev/null 2>&1 && [ -f "$PROJECT_DIR/.venv/bin/python3" ]; then
     printf "  %-45s " "uv run vspipe 执行测试"
-    VS_LIB_PATHS="/usr/local/lib/python3/dist-packages/vapoursynth:/usr/local/lib"
-    export LD_LIBRARY_PATH="$VS_LIB_PATHS:${LD_LIBRARY_PATH:-}"
-    # 先用 uv 跑 vapoursynth config 确保配置正确，然后设置 VAPOURSYNTH_CONF
+    # 先通过 uv 配置 VapourSynth Python 绑定
     uv run --directory "$PROJECT_DIR" vapoursynth config 2>/dev/null || true
     export VAPOURSYNTH_CONF="$HOME/.config/vapoursynth/vapoursynth.toml"
+    # 注意: 不要手动设 LD_LIBRARY_PATH! env.sh 已配置好，叠加会导致加载错误的 libvsscript.so
     if uv run --directory "$PROJECT_DIR" vspipe "$TEST_VPY" -c y4m --progress . 2>/dev/null > /dev/null; then
         echo -e "${GREEN}✅ PASS${NC}"
         PASS=$((PASS + 1))
