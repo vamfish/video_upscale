@@ -214,14 +214,22 @@ if command -v uv >/dev/null 2>&1 && [ -f "$PROJECT_DIR/.venv/bin/python3" ]; the
     printf "  %-45s " "uv run vspipe 执行测试"
     VS_LIB_PATHS="/usr/local/lib/python3/dist-packages/vapoursynth:/usr/local/lib"
     export LD_LIBRARY_PATH="$VS_LIB_PATHS:${LD_LIBRARY_PATH:-}"
+    # 先用 uv 跑 vapoursynth config 确保配置正确，然后设置 VAPOURSYNTH_CONF
+    uv run --directory "$PROJECT_DIR" vapoursynth config 2>/dev/null || true
     export VAPOURSYNTH_CONF="$HOME/.config/vapoursynth/vapoursynth.toml"
     if uv run --directory "$PROJECT_DIR" vspipe "$TEST_VPY" -c y4m --progress . 2>/dev/null > /dev/null; then
         echo -e "${GREEN}✅ PASS${NC}"
         PASS=$((PASS + 1))
     else
-        VS_ERR=$(uv run --directory "$PROJECT_DIR" vspipe "$TEST_VPY" -c y4m --progress . 2>&1 | head -3 || true)
+        # 输出完整错误信息帮助 debug
         echo -e "${RED}❌ FAIL${NC}"
-        echo -e "                  ${RED}$VS_ERR${NC}"
+        echo "  ── 调试信息 ──"
+        echo "  VAPOURSYNTH_CONF=$VAPOURSYNTH_CONF"
+        echo "  LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+        echo "  测试脚本: $TEST_VPY"
+        echo "  ── vspipe 输出 ──"
+        uv run --directory "$PROJECT_DIR" vspipe "$TEST_VPY" -c y4m --progress . 2>&1 | sed 's/^/  | /' || true
+        FAIL=$((FAIL + 1))
         FAIL=$((FAIL + 1))
     fi
 else
