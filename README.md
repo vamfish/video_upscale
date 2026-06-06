@@ -109,7 +109,11 @@ video_upscale/
 
 ## 离线部署
 
-将以下离线包放入 `Downloads/` 目录即可离线安装。**三张 GPU (A5000/4090/5080) 共用同一套包**：
+部署需要两类离线包：**系统组件**（CUDA/TensorRT/cuDNN deb）和 **Python 依赖**（wheel）。
+
+### 1. 系统组件离线包
+
+放入 `Downloads/` 目录，**三张 GPU (A5000/4090/5080) 共用同一套**：
 
 | 文件 | 大小 | 下载地址 |
 |------|------|----------|
@@ -119,7 +123,27 @@ video_upscale/
 | `cuda-wsl-ubuntu.pin` | <1 KB | CUDA WSL 包附带 |
 | `libtinfo5_6.3-2ubuntu0.1_amd64.deb` | ~100 KB | `apt download libtinfo5` |
 
-> **注意**: 全部需要 **NVIDIA Developer 免费账号**（邮箱注册，5 分钟搞定）。脚本启动时自动检测 GPU 架构并验证下载包兼容性。
+> **注意**: 全部需要 **NVIDIA Developer 免费账号**（邮箱注册，5 分钟）。
+
+### 2. Python 依赖离线包
+
+从已有环境的 `uv.lock` 提取并下载所有 wheel：
+
+```bash
+# 在一台已部署的机器上执行
+./download_wheels.sh
+```
+
+脚本从 `video_upscale_project/uv.lock` 提取约 120 个 wheel URL，下载到 `Downloads/offline_pypi/`（约 5 GB）。
+
+在其他机器上，部署脚本会自动检测 `Downloads/offline_pypi/` 并离线安装：
+
+```bash
+# 脚本内部逻辑（无需手动执行）
+uv sync --find-links Downloads/offline_pypi/ --no-index
+```
+
+> `uv sync` 会严格按 `uv.lock` 锁定版本，确保所有机器上 Python 包版本完全一致。
 
 ## 环境验证
 
