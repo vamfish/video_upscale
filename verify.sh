@@ -5,7 +5,8 @@
 # 用法: ./verify.sh
 # =============================================================================
 
-set -euo pipefail
+set -eu
+# 注意: 不用 pipefail，因为 ldconfig | grep -q 会因 SIGPIPE 返回 141
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/video_upscale_project"
@@ -84,7 +85,7 @@ for cuda_dir in /usr/local/cuda-*; do
 done
 $CUDNN_H_FOUND || { echo -e "  cudnn_version.h             ${RED}❌ FAIL${NC}"; FAIL=$((FAIL + 1)); }
 
-check "libcudnn.so"               sh -c '/sbin/ldconfig -p 2>/dev/null | grep -q libcudnn'
+check "libcudnn.so"               sh -c '/sbin/ldconfig -p | grep -q libcudnn'
 echo ""
 
 # ------------------------------------------------------------------
