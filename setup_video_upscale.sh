@@ -34,38 +34,50 @@ LOG_FILE="$SCRIPT_DIR/setup.log"
 # ============================================================================
 # 注意: TENSORRT_CUDA_COMPAT 是 TensorRT 包名中的 CUDA 版本号，
 #       可能与 CUDA_VERSION 不完全一致（如 12.2 对应 compat 12.0）
-CUDA_VERSION="12.2"
-TENSORRT_VERSION="8.6.1.6"
-TENSORRT_CUDA_COMPAT="12.0"
-CUDNN_VERSION="8.9.7.29"
-CUDNN_CUDA_COMPAT="12"
+#       TensorRT ≥ 10 / cuDNN ≥ 9 改用 deb repo 包，安装方式不同
+CUDA_VERSION="13.3"
+TENSORRT_VERSION="11.0.0"
+TENSORRT_CUDA_COMPAT="13.2"
+CUDNN_VERSION="9.23.0"
+CUDNN_CUDA_COMPAT="13"
 PYTHON_VERSION="3.12"
 FFMS2_VERSION="5.0"
-
-# GPU 架构 → TensorRT 最低版本映射
-# SM >= 100 (Blackwell RTX 50xx): 需要 TensorRT 10.x + CUDA 12.6
-# SM 80-99  (Ampere/Ada): 需要 TensorRT 8.0+
-# SM 75-79  (Turing): 需要 TensorRT 7.0+
-declare -A GPU_TRT_REQUIREMENT=(
-    [cuda]=""
-    [trt]=""
-    [cudnn]=""
-)
 
 # 离线包文件名 — 由 _rebuild_package_names() 根据当前版本变量生成
 CUDA_DEB=""
 CUDA_PIN="cuda-wsl-ubuntu.pin"
-TENSORRT_TAR=""
-CUDNN_TAR=""
+TENSORRT_PKG=""     # .tar.gz (旧版) 或 .deb (新版: TRT>=10)
+TENSORRT_IS_DEB=false
+CUDNN_PKG=""        # .tar.xz (旧版) 或 .deb (新版: cuDNN>=9)
+CUDNN_IS_DEB=false
 LIBTINFO5_DEB="libtinfo5_6.3-2ubuntu0.1_amd64.deb"
 
 _rebuild_package_names() {
-    # CUDA deb 文件名: cuda-repo-wsl-ubuntu-12-2-local_12.2.0-1_amd64.deb
-    #                 (文件夹部分用连字符, 版本部分用点号)
+    # CUDA WSL deb 文件名: cuda-repo-wsl-ubuntu-13-3-local_13.3.0-1_amd64.deb
     local cuda_dash="${CUDA_VERSION//\./-}"
     CUDA_DEB="cuda-repo-wsl-ubuntu-${cuda_dash}-local_${CUDA_VERSION}.0-1_amd64.deb"
-    TENSORRT_TAR="TensorRT-${TENSORRT_VERSION}.Linux.x86_64-gnu.cuda-${TENSORRT_CUDA_COMPAT}.tar.gz"
-    CUDNN_TAR="cudnn-linux-x86_64-${CUDNN_VERSION}_cuda${CUDNN_CUDA_COMPAT}-archive.tar.xz"
+
+    # TensorRT: >= 10.0 使用 deb repo，< 10.0 使用 tar.gz
+    local trt_major=$(echo "$TENSORRT_VERSION" | cut -d. -f1)
+    if [ "$trt_major" -ge 10 ]; then
+        TENSORRT_IS_DEB=true
+        # nv-tensorrt-local-repo-ubuntu2404-11.0.0-cuda-13.2_1.0-1_amd64.deb
+        TENSORRT_PKG="nv-tensorrt-local-repo-ubuntu2404-${TENSORRT_VERSION}-cuda-${TENSORRT_CUDA_COMPAT}_1.0-1_amd64.deb"
+    else
+        TENSORRT_IS_DEB=false
+        TENSORRT_PKG="TensorRT-${TENSORRT_VERSION}.Linux.x86_64-gnu.cuda-${TENSORRT_CUDA_COMPAT}.tar.gz"
+    fi
+
+    # cuDNN: >= 9.0 使用 deb repo，< 9.0 使用 tar.xz
+    local cudnn_major=$(echo "$CUDNN_VERSION" | cut -d. -f1)
+    if [ "$cudnn_major" -ge 9 ]; then
+        CUDNN_IS_DEB=true
+        # cudnn-local-repo-ubuntu2404-9.23.0_1.0-1_amd64.deb
+        CUDNN_PKG="cudnn-local-repo-ubuntu2404-${CUDNN_VERSION}_1.0-1_amd64.deb"
+    else
+        CUDNN_IS_DEB=false
+        CUDNN_PKG="cudnn-linux-x86_64-${CUDNN_VERSION}_cuda${CUDNN_CUDA_COMPAT}-archive.tar.xz"
+    fi
 }
 _rebuild_package_names  # 初始构建
 
@@ -124,6 +136,16 @@ done
 # ============================================================================
 export LD_LIBRARY_PATH=""
 export PATH="$HOME/.local/bin:$PATH"
+
+# 部署状态追踪 (用于最终报告)
+DEPLOY_FAILS=0
+
+# 计算 CUDA 路径 (在版本确定后)
+CUDA_DASH="${CUDA_VERSION//\./-}"                 # 13.3 → 13-3
+CUDA_PATH="/usr/local/cuda-${CUDA_VERSION}"       # /usr/local/cuda-13.3
+CUDA_TOOLKIT="cuda-toolkit-${CUDA_DASH}"          # cuda-toolkit-13-3
+CUDA_REPO_PKG="cuda-repo-wsl-ubuntu-${CUDA_DASH}-local"  # deb 包名
+CUDA_REPO_DIR="/var/${CUDA_REPO_PKG}"             # deb 安装后的 repo 目录
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -254,17 +276,50 @@ _find_download() {
     find "$DOWNLOAD_DIR" -maxdepth 1 -name "$pattern" -type f 2>/dev/null | sort -V | tail -1
 }
 
+# 同时扫描新旧两种格式的包 (旧: tar.gz/tar.xz, 新: deb repo)
 EXISTING_TRT_TAR=$(_find_download "TensorRT-*.Linux.x86_64-gnu.cuda-*.tar.gz")
-EXISTING_CUDA_DEB=$(_find_download "cuda-repo-wsl-ubuntu-*-local_*_amd64.deb")
-EXISTING_CUDNN_TAR=$(_find_download "cudnn-linux-x86_64-*_cuda*-archive.tar.xz")
+EXISTING_TRT_DEB=$(_find_download "nv-tensorrt-local-repo-*_1.0-1_amd64.deb")
+# 优先使用 deb 格式 (新版), 其次 tar.gz (旧版)
+EXISTING_TRT_PKG="${EXISTING_TRT_DEB:-${EXISTING_TRT_TAR:-}}"
+TRT_IS_DEB=$([ -n "$EXISTING_TRT_DEB" ] && echo true || echo false)
 
-# 解析文件名的版本信息
-_parse_trt_ver()   { basename "$1" | sed -E 's/TensorRT-([0-9.]+)\.Linux.*/\1/'; }
-_parse_trt_cuda()  { basename "$1" | sed -E 's/.*cuda-([0-9.]+)\.tar\.gz/\1/'; }
-# CUDA WSL deb 文件名如 cuda-repo-wsl-ubuntu-12-2-local_12.2.0-1_amd64.deb
-# 提取版本: 12.2 (文件夹部分用 - 替换 .)
-_parse_cuda_ver()  { basename "$1" | sed -E 's/cuda-repo-wsl-ubuntu-([0-9]+)-([0-9]+)-local.*/\1.\2/'; }
-_parse_cudnn_ver() { basename "$1" | sed -E 's/cudnn-linux-x86_64-([0-9.]+)_cuda.*/\1/'; }
+EXISTING_CUDA_DEB=$(_find_download "cuda-repo-wsl-ubuntu-*-local_*_amd64.deb")
+
+EXISTING_CUDNN_TAR=$(_find_download "cudnn-linux-x86_64-*_cuda*-archive.tar.xz")
+EXISTING_CUDNN_DEB=$(_find_download "cudnn-local-repo-*_1.0-1_amd64.deb")
+EXISTING_CUDNN_PKG="${EXISTING_CUDNN_DEB:-${EXISTING_CUDNN_TAR:-}}"
+CUDNN_IS_DEB=$([ -n "$EXISTING_CUDNN_DEB" ] && echo true || echo false)
+
+# 解析文件名的版本信息 (兼容新旧两种格式)
+_parse_trt_ver() {
+    local name; name=$(basename "$1")
+    if [[ "$name" == nv-tensorrt-* ]]; then
+        # nv-tensorrt-local-repo-ubuntu2404-11.0.0-cuda-13.2_1.0-1_amd64.deb
+        echo "$name" | sed -E 's/nv-tensorrt-local-repo-ubuntu[0-9]+-([0-9.]+)-cuda.*/\1/'
+    else
+        echo "$name" | sed -E 's/TensorRT-([0-9.]+)\.Linux.*/\1/'
+    fi
+}
+_parse_trt_cuda() {
+    local name; name=$(basename "$1")
+    if [[ "$name" == nv-tensorrt-* ]]; then
+        echo "$name" | sed -E 's/.*cuda-([0-9.]+)_.*/\1/'
+    else
+        echo "$name" | sed -E 's/.*cuda-([0-9.]+)\.tar\.gz/\1/'
+    fi
+}
+_parse_cuda_ver() {
+    # cuda-repo-wsl-ubuntu-13-3-local_13.3.0-1_amd64.deb
+    basename "$1" | sed -E 's/cuda-repo-wsl-ubuntu-([0-9]+)-([0-9]+)-local.*/\1.\2/'
+}
+_parse_cudnn_ver() {
+    local name; name=$(basename "$1")
+    if [[ "$name" == cudnn-local-repo-* ]]; then
+        echo "$name" | sed -E 's/cudnn-local-repo-ubuntu[0-9]+-([0-9.]+)_.*/\1/'
+    else
+        echo "$name" | sed -E 's/cudnn-linux-x86_64-([0-9.]+)_cuda.*/\1/'
+    fi
+}
 _version_ge() {  # $1 >= $2 ?  (语义版本比较)
     local a="${1:-0}"; local b="${2:-0}"
     [ "$(printf '%s\n' "$b" "$a" | sort -V | tail -1)" = "$a" ]
@@ -286,13 +341,13 @@ fi
 # Auto-detect compatible packages from Downloads/
 HAS_COMPAT_TRT=false; HAS_COMPAT_CUDA=false; HAS_COMPAT_CUDNN=false
 
-if [ -n "$EXISTING_TRT_TAR" ]; then
-    EX_TRT_VER=$(_parse_trt_ver "$EXISTING_TRT_TAR")
+if [ -n "$EXISTING_TRT_PKG" ]; then
+    EX_TRT_VER=$(_parse_trt_ver "$EXISTING_TRT_PKG")
     EX_TRT_MAJOR=$(echo "$EX_TRT_VER" | cut -d. -f1)
     if [ "$EX_TRT_MAJOR" -ge "$REC_MIN_TRT_MAJOR" ]; then
         HAS_COMPAT_TRT=true
         TENSORRT_VERSION="$EX_TRT_VER"
-        TENSORRT_CUDA_COMPAT=$(_parse_trt_cuda "$EXISTING_TRT_TAR")
+        TENSORRT_CUDA_COMPAT=$(_parse_trt_cuda "$EXISTING_TRT_PKG")
     fi
 fi
 
@@ -317,8 +372,8 @@ fi
 
 REC_MIN_CUDNN="${REC_MIN_CUDNN:-$(_recommend_min_cudnn_for_cuda "$CURRENT_CUDA_MAJOR")}"
 
-if [ -n "$EXISTING_CUDNN_TAR" ]; then
-    EX_CUDNN_VER=$(_parse_cudnn_ver "$EXISTING_CUDNN_TAR")
+if [ -n "$EXISTING_CUDNN_PKG" ]; then
+    EX_CUDNN_VER=$(_parse_cudnn_ver "$EXISTING_CUDNN_PKG")
     if _version_ge "$EX_CUDNN_VER" "${REC_MIN_CUDNN:-8.9.0}"; then
         HAS_COMPAT_CUDNN=true
         CUDNN_VERSION="$EX_CUDNN_VER"
@@ -338,13 +393,13 @@ info "  Downloads/ 中的离线包:"
     else
         info "    CUDA:     ❌ 未找到"
     fi
-    if [ -n "$EXISTING_TRT_TAR" ]; then
-        info "    TensorRT: $(basename "$EXISTING_TRT_TAR") (v$(_parse_trt_ver "$EXISTING_TRT_TAR"))"
+    if [ -n "$EXISTING_TRT_PKG" ]; then
+        info "    TensorRT: $(basename "$EXISTING_TRT_PKG") (v$(_parse_trt_ver "$EXISTING_TRT_PKG"))"
     else
         info "    TensorRT: ❌ 未找到"
     fi
-    if [ -n "$EXISTING_CUDNN_TAR" ]; then
-        info "    cuDNN:    $(basename "$EXISTING_CUDNN_TAR")"
+    if [ -n "$EXISTING_CUDNN_PKG" ]; then
+        info "    cuDNN:    $(basename "$EXISTING_CUDNN_PKG")"
     else
         info "    cuDNN:    ❌ 未找到"
     fi
@@ -423,19 +478,27 @@ if $NEED_TRT_UPGRADE || $NEED_CUDA_UPGRADE; then
         esac
     fi
 else
-    if [ "$HAS_COMPAT_TRT" = true ] && [ -n "$EXISTING_TRT_TAR" ]; then
+    if [ "$HAS_COMPAT_TRT" = true ] && [ -n "$EXISTING_TRT_PKG" ]; then
         info "已匹配 Downloads/ 中的 TensorRT v$TENSORRT_VERSION ✅"
     fi
     if [ "$HAS_COMPAT_CUDA" = true ] && [ -n "$EXISTING_CUDA_DEB" ]; then
         info "已匹配 Downloads/ 中的 CUDA v$CUDA_VERSION ✅"
     fi
-    if [ "$HAS_COMPAT_CUDNN" = true ] && [ -n "$EXISTING_CUDNN_TAR" ]; then
+    if [ "$HAS_COMPAT_CUDNN" = true ] && [ -n "$EXISTING_CUDNN_PKG" ]; then
         info "已匹配 Downloads/ 中的 cuDNN v$CUDNN_VERSION ✅"
     fi
     info "所有离线包与 GPU 架构兼容 ✅"
 fi
 
 SKIP_TENSORRT_ENGINE="${SKIP_TENSORRT_ENGINE:-false}"
+
+# 兼容性检测可能修改了版本变量，重新计算路径和包名
+CUDA_DASH="${CUDA_VERSION//\./-}"
+CUDA_PATH="/usr/local/cuda-${CUDA_VERSION}"
+CUDA_TOOLKIT="cuda-toolkit-${CUDA_DASH}"
+CUDA_REPO_PKG="cuda-repo-wsl-ubuntu-${CUDA_DASH}-local"
+CUDA_REPO_DIR="/var/${CUDA_REPO_PKG}"
+_rebuild_package_names
 # --------------------------------------------------------------------
 
 info "更新系统并安装基础依赖..."
@@ -469,16 +532,21 @@ elif $IS_WSL; then
 
     CUDA_DEB_PATH="$DOWNLOAD_DIR/$CUDA_DEB"
     if [ -f "$CUDA_DEB_PATH" ]; then
-        if ! has_deb cuda-repo-wsl-ubuntu-12-2-local; then
-            run sudo dpkg -i "$CUDA_DEB_PATH"
-            info "CUDA repo 已安装"
+        if has_deb "$CUDA_REPO_PKG"; then
+            warn "CUDA repo (${CUDA_REPO_PKG}) 已安装，跳过 dpkg"
+        elif $DRY_RUN; then
+            dry "sudo dpkg -i $CUDA_DEB_PATH"
+        else
+            info "安装 CUDA repo (${CUDA_REPO_PKG})..."
+            sudo dpkg -i "$CUDA_DEB_PATH" || error "CUDA repo 安装失败: $CUDA_DEB_PATH"
+            info "CUDA repo 安装成功"
         fi
     else
         error "找不到 $CUDA_DEB_PATH，请将离线包放入 Downloads/"
     fi
 
-    if [ ! -f /usr/share/keyrings/cuda-archive-keyring.gpg ]; then
-        run sudo cp /var/cuda-repo-wsl-ubuntu-12-2-local/cuda-*-keyring.gpg /usr/share/keyrings/ 2>/dev/null || true
+    if [ ! -f /usr/share/keyrings/cuda-archive-keyring.gpg ] && [ -d "$CUDA_REPO_DIR" ]; then
+        $DRY_RUN || sudo cp "${CUDA_REPO_DIR}"/cuda-*-keyring.gpg /usr/share/keyrings/ 2>/dev/null || true
     fi
 
     LIBTINFO5_PATH="$DOWNLOAD_DIR/$LIBTINFO5_DEB"
@@ -486,8 +554,14 @@ elif $IS_WSL; then
         run sudo dpkg -i "$LIBTINFO5_PATH"
     fi
 
-    run sudo apt-get update -qq
-    run sudo apt-get install -y -qq cuda-toolkit-12-2
+    if $DRY_RUN; then
+        dry "sudo apt-get update -qq && sudo apt-get install -y -qq $CUDA_TOOLKIT"
+    else
+        info "更新 apt 源..."
+        sudo apt-get update -qq || warn "apt-get update 有警告 (可能网络问题，本地 repo 仍可用)"
+        info "安装 $CUDA_TOOLKIT ..."
+        sudo apt-get install -y -qq "$CUDA_TOOLKIT" || error "CUDA Toolkit 安装失败"
+    fi
 else
     info "原生 Ubuntu 环境，请使用 runfile 或 apt 网络安装 CUDA"
     warn "参考: https://developer.nvidia.com/cuda-downloads"
@@ -495,13 +569,13 @@ else
 fi
 
 # 环境变量持久化
-if ! grep -q "/usr/local/cuda-12.2/bin" ~/.bashrc 2>/dev/null; then
-    echo 'export PATH=/usr/local/cuda-12.2/bin:$PATH' >> ~/.bashrc
-    echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.2/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+if ! grep -q "${CUDA_PATH}/bin" ~/.bashrc 2>/dev/null; then
+    echo "export PATH=${CUDA_PATH}/bin:\$PATH" >> ~/.bashrc
+    echo "export LD_LIBRARY_PATH=${CUDA_PATH}/lib64:\$LD_LIBRARY_PATH" >> ~/.bashrc
     info "CUDA 环境变量已写入 ~/.bashrc"
 fi
-export PATH=/usr/local/cuda-12.2/bin:$PATH
-export LD_LIBRARY_PATH=/usr/local/cuda-12.2/lib64:$LD_LIBRARY_PATH
+export PATH="${CUDA_PATH}/bin:$PATH"
+export LD_LIBRARY_PATH="${CUDA_PATH}/lib64:$LD_LIBRARY_PATH"
 success "CUDA ${CUDA_VERSION} 配置完成"
 
 # ============================================================================
@@ -509,29 +583,95 @@ success "CUDA ${CUDA_VERSION} 配置完成"
 # ============================================================================
 step "2. TensorRT ${TENSORRT_VERSION} 安装"
 
-TENSORRT_INSTALL_DIR="$AI_LIBS_DIR/TensorRT-${TENSORRT_VERSION}"
+# deb 格式: 安装到系统路径; tar.gz 格式: 解压到 $AI_LIBS_DIR
+if $TENSORRT_IS_DEB; then
+    TENSORRT_INSTALL_DIR="/usr"
+else
+    TENSORRT_INSTALL_DIR="$AI_LIBS_DIR/TensorRT-${TENSORRT_VERSION}"
+fi
 
 if $SKIP_TENSORRT; then
     warn "跳过 TensorRT 安装 (--skip-tensorrt)"
+elif $TENSORRT_IS_DEB; then
+    TRT_DEB="$DOWNLOAD_DIR/$TENSORRT_PKG"
+    [ -f "$TRT_DEB" ] || error "找不到 $TRT_DEB，请将离线包放入 Downloads/"
+
+    # deb repo 方式安装 TensorRT (≥ 10.0 的新格式)
+    # 检查 libnvinfer 是否已安装 (TensorRT 核心库)
+    if ldconfig -p 2>/dev/null | grep -q libnvinfer; then
+        warn "libnvinfer.so 已存在，跳过 TensorRT 安装"
+    else
+        info "通过 deb repo 安装 TensorRT ${TENSORRT_VERSION}..."
+        TRT_REPO_PKG="nv-tensorrt-local-repo-ubuntu2404-${TENSORRT_VERSION}-cuda-${TENSORRT_CUDA_COMPAT}"
+        if $DRY_RUN; then
+            dry "sudo dpkg -i $TRT_DEB && sudo cp keyring && sudo apt-get update && sudo apt-get install -y libnvinfer*"
+        else
+            if ! has_deb "$TRT_REPO_PKG"; then
+                sudo dpkg -i "$TRT_DEB" || error "TensorRT repo 安装失败: $TRT_DEB"
+            fi
+            # 安装 GPG key
+            TRT_REPO_DIR="/var/${TRT_REPO_PKG}"
+            sudo cp "$TRT_REPO_DIR"/nv-tensorrt-local-*-keyring.gpg /usr/share/keyrings/ 2>/dev/null || true
+            sudo apt-get update -qq || warn "apt-get update 有警告"
+            # TensorRT 10+ 的包: libnvinfer11 + libnvinfer-dev + libnvinfer-bin
+            # (没有 tensorrt 元包，需要分别安装核心库、开发包、工具)
+            TRT_LIB_VER=$(echo "$TENSORRT_VERSION" | cut -d. -f1)  # 11
+            sudo apt-get install -y -qq \
+                "libnvinfer${TRT_LIB_VER}" \
+                "libnvinfer-bin" \
+                "libnvinfer-dev" \
+                "libnvinfer-plugin${TRT_LIB_VER}" \
+                "libnvinfer-plugin-dev" \
+                "libnvinfer-headers-dev" \
+                "libnvonnxparsers${TRT_LIB_VER}" \
+                "libnvonnxparsers-dev" 2>/dev/null || true
+
+            # 验证安装
+            if ldconfig -p 2>/dev/null | grep -q libnvinfer; then
+                success "TensorRT ${TENSORRT_VERSION} 安装完成"
+            else
+                # 回退：安装所有可用的 libnvinfer 相关包
+                warn "部分包安装失败，尝试安装所有可用 TensorRT 包..."
+                sudo apt-get install -y -qq 'libnvinfer*' 'libnvparsers*' 'libnvonnxparsers*' 2>/dev/null || true
+                if ! ldconfig -p 2>/dev/null | grep -q libnvinfer; then
+                    error "TensorRT 安装失败：找不到 libnvinfer.so"
+                fi
+            fi
+            success "TensorRT ${TENSORRT_VERSION} 安装完成"
+        fi
+    fi
+    # deb 安装后库在 /usr/lib/x86_64-linux-gnu/, 头文件在 /usr/include/x86_64-linux-gnu/
 elif [ -d "$TENSORRT_INSTALL_DIR" ] && [ -f "$TENSORRT_INSTALL_DIR/lib/libnvinfer.so" ]; then
-    success "TensorRT ${TENSORRT_VERSION} 已存在，跳过"
+    success "TensorRT ${TENSORRT_VERSION} 已存在，跳过 (tar 格式)"
 else
-    TENSORRT_PATH="$DOWNLOAD_DIR/$TENSORRT_TAR"
-    [ -f "$TENSORRT_PATH" ] || error "找不到 $TENSORRT_PATH，请将离线包放入 Downloads/"
+    TRT_TAR="$DOWNLOAD_DIR/$TENSORRT_PKG"
+    [ -f "$TRT_TAR" ] || error "找不到 $TRT_TAR，请将离线包放入 Downloads/"
 
     run mkdir -p "$AI_LIBS_DIR"
     info "解压 TensorRT (可能需要几分钟)..."
-    run tar -xzvf "$TENSORRT_PATH" -C "$AI_LIBS_DIR" >/dev/null 2>&1
+    run tar -xzvf "$TRT_TAR" -C "$AI_LIBS_DIR" >/dev/null 2>&1
     success "TensorRT 解压完成"
 fi
 
-export LD_LIBRARY_PATH="$TENSORRT_INSTALL_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PATH="$TENSORRT_INSTALL_DIR/bin${PATH:+:$PATH}"
-
-if ! grep -q "TensorRT-${TENSORRT_VERSION}" ~/.bashrc 2>/dev/null; then
-    echo "export LD_LIBRARY_PATH=\"$TENSORRT_INSTALL_DIR/lib:\$LD_LIBRARY_PATH\"" >> ~/.bashrc
-    echo "export PATH=\"$TENSORRT_INSTALL_DIR/bin:\$PATH\"" >> ~/.bashrc
-    info "TensorRT 环境变量已写入 ~/.bashrc"
+# 设置环境变量 (deb 装到系统路径则无需额外设置)
+if $TENSORRT_IS_DEB; then
+    # 清理 ~/.bashrc 中的旧 TensorRT tar 版本 PATH
+    if grep -q "ai_libs/TensorRT" ~/.bashrc 2>/dev/null; then
+        sed -i '/ai_libs\/TensorRT/d' ~/.bashrc
+        info "已清理 ~/.bashrc 中的旧 TensorRT 路径"
+    fi
+    # deb 版本 trtexec 在 /usr/bin/，库在 /usr/lib，无需额外配置
+    # 但需要确认系统 trtexec 优先于旧版
+    TRT_BIN_DIR="/usr/bin"
+else
+    export LD_LIBRARY_PATH="$TENSORRT_INSTALL_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export PATH="$TENSORRT_INSTALL_DIR/bin${PATH:+:$PATH}"
+    TRT_BIN_DIR="$TENSORRT_INSTALL_DIR/bin"
+    if ! grep -q "TensorRT-${TENSORRT_VERSION}" ~/.bashrc 2>/dev/null; then
+        echo "export LD_LIBRARY_PATH=\"$TENSORRT_INSTALL_DIR/lib:\$LD_LIBRARY_PATH\"" >> ~/.bashrc
+        echo "export PATH=\"$TENSORRT_INSTALL_DIR/bin:\$PATH\"" >> ~/.bashrc
+        info "TensorRT 环境变量已写入 ~/.bashrc"
+    fi
 fi
 success "TensorRT ${TENSORRT_VERSION} 配置完成"
 
@@ -540,31 +680,59 @@ success "TensorRT ${TENSORRT_VERSION} 配置完成"
 # ============================================================================
 step "3. cuDNN ${CUDNN_VERSION} 安装"
 
+CUDA_DASH="${CUDA_VERSION//\./-}"  # 13.3 → 13-3
+CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)  # 13
+
 if $SKIP_CUDNN; then
     warn "跳过 cuDNN 安装 (--skip-cudnn)"
-elif [ -f "/usr/local/cuda-12.2/include/cudnn_version.h" ] && \
-     [ -f "/usr/local/cuda-12.2/lib64/libcudnn.so" ]; then
-    success "cuDNN ${CUDNN_VERSION} 已安装，跳过"
+elif $CUDNN_IS_DEB; then
+    CUDNN_DEB="$DOWNLOAD_DIR/$CUDNN_PKG"
+    [ -f "$CUDNN_DEB" ] || error "找不到 $CUDNN_DEB，请将离线包放入 Downloads/"
+
+    # deb repo 方式安装 cuDNN (≥ 9.0 的新格式)
+    CUDNN_CUDA_PKG="cudnn9-cuda-${CUDA_MAJOR}"
+
+    # 检查是否已安装
+    if has_deb "$CUDNN_CUDA_PKG" || (ldconfig -p 2>/dev/null | grep -q libcudnn); then
+        warn "cuDNN (${CUDNN_CUDA_PKG}) 已安装，跳过"
+    else
+        info "通过 deb repo 安装 cuDNN ${CUDNN_VERSION} (${CUDNN_CUDA_PKG})..."
+        if $DRY_RUN; then
+            dry "sudo dpkg -i $CUDNN_DEB && sudo apt-get update && sudo apt-get install -y $CUDNN_CUDA_PKG"
+        else
+            if ! has_deb cudnn-local-repo-ubuntu2404-${CUDNN_VERSION}; then
+                sudo dpkg -i "$CUDNN_DEB" || error "cuDNN repo 安装失败: $CUDNN_DEB"
+            fi
+            sudo cp /var/cudnn-local-repo-ubuntu2404-${CUDNN_VERSION}/cudnn-*-keyring.gpg /usr/share/keyrings/ 2>/dev/null || true
+            sudo apt-get update -qq || warn "apt-get update 有警告"
+            sudo apt-get install -y -qq "$CUDNN_CUDA_PKG" || error "cuDNN 安装失败"
+            success "cuDNN ${CUDNN_VERSION} 安装完成"
+        fi
+        success "cuDNN ${CUDNN_VERSION} 安装完成"
+    fi
+elif [ -f "${CUDA_PATH}/include/cudnn_version.h" ] && \
+     [ -f "${CUDA_PATH}/lib64/libcudnn.so" ]; then
+    success "cuDNN ${CUDNN_VERSION} 已安装，跳过 (手动安装)"
 else
-    CUDNN_PATH="$DOWNLOAD_DIR/$CUDNN_TAR"
-    [ -f "$CUDNN_PATH" ] || error "找不到 $CUDNN_PATH，请将离线包放入 Downloads/"
+    # 旧格式: tar.xz 解压后手动复制
+    CUDNN_TAR="$DOWNLOAD_DIR/$CUDNN_PKG"
+    [ -f "$CUDNN_TAR" ] || error "找不到 $CUDNN_TAR，请将离线包放入 Downloads/"
 
     run mkdir -p "$AI_LIBS_DIR/cudnn"
     info "解压 cuDNN..."
-    run tar -xf "$CUDNN_PATH" -C "$AI_LIBS_DIR/cudnn" >/dev/null 2>&1
+    run tar -xf "$CUDNN_TAR" -C "$AI_LIBS_DIR/cudnn" >/dev/null 2>&1
 
-    # 获取 tar 内顶层目录名（|| true 避免 head -1 触发 SIGPIPE → pipefail）
     if $DRY_RUN; then
         CUDNN_EXTRACT_DIR="cudnn-linux-x86_64-${CUDNN_VERSION}_cuda${CUDNN_CUDA_COMPAT}-archive"
     else
-        CUDNN_EXTRACT_DIR=$(tar -tf "$CUDNN_PATH" 2>/dev/null | head -1 | cut -f1 -d"/") || true
+        CUDNN_EXTRACT_DIR=$(tar -tf "$CUDNN_TAR" 2>/dev/null | head -1 | cut -f1 -d"/") || true
     fi
     [ -z "$CUDNN_EXTRACT_DIR" ] && error "无法确定 cuDNN 解压目录名"
 
     info "安装 cuDNN 头文件和库文件..."
-    run sudo cp "$AI_LIBS_DIR/cudnn/$CUDNN_EXTRACT_DIR/include/cudnn"*.h /usr/local/cuda-12.2/include/
-    run sudo cp -P "$AI_LIBS_DIR/cudnn/$CUDNN_EXTRACT_DIR/lib/libcudnn"* /usr/local/cuda-12.2/lib64/
-    run sudo chmod a+r /usr/local/cuda-12.2/include/cudnn*.h /usr/local/cuda-12.2/lib64/libcudnn*
+    run sudo cp "$AI_LIBS_DIR/cudnn/$CUDNN_EXTRACT_DIR/include/cudnn"*.h "${CUDA_PATH}/include/"
+    run sudo cp -P "$AI_LIBS_DIR/cudnn/$CUDNN_EXTRACT_DIR/lib/libcudnn"* "${CUDA_PATH}/lib64/"
+    run sudo chmod a+r "${CUDA_PATH}/include/cudnn"*.h "${CUDA_PATH}/lib64/libcudnn"*
 fi
 success "cuDNN ${CUDNN_VERSION} 配置完成"
 
@@ -652,7 +820,8 @@ step "5. VapourSynth 核心库编译安装"
 
 if $SKIP_VAPOURSYNTH; then
     warn "跳过 VapourSynth 安装 (--skip-vapoursynth)"
-elif ldconfig -p 2>/dev/null | grep -q libvapoursynth; then
+elif ldconfig -p 2>/dev/null | grep -q libvapoursynth || \
+     find /usr/local/lib -name 'libvapoursynth.so*' 2>/dev/null | grep -q .; then
     success "libvapoursynth.so 已安装，跳过编译"
 else
     VS_SRC_DIR="$PROJECT_DIR/vapoursynth_headers"
@@ -719,11 +888,25 @@ fi
 step "7. vs-mlrt (TensorRT 推理插件) 编译"
 
 VSMLRT_SO="$PROJECT_DIR/lib/libvstrt.so"
+VSMLRT_VERSION_FILE="$PROJECT_DIR/lib/.vsmlrt_trt_version"
 
 if $SKIP_VSMLRT; then
     warn "跳过 vs-mlrt 编译 (--skip-vsmlrt)"
-elif [ -f "$VSMLRT_SO" ]; then
-    success "libvstrt.so 已存在，跳过编译"
+elif [ -f "$VSMLRT_SO" ] && [ -f "$VSMLRT_VERSION_FILE" ]; then
+    COMPILED_TRT_VER=$(cat "$VSMLRT_VERSION_FILE")
+    if [ "$COMPILED_TRT_VER" = "$TENSORRT_VERSION" ]; then
+        success "libvstrt.so 已存在 (TensorRT v$TENSORRT_VERSION)，跳过编译"
+    else
+        warn "TensorRT 版本变更 (v${COMPILED_TRT_VER} → v${TENSORRT_VERSION})，需重新编译 vs-mlrt"
+        rm -f "$VSMLRT_SO"
+    fi
+fi
+
+# 如果 .so 不存在，重新编译
+if [ -f "$VSMLRT_SO" ]; then
+    :  # 已存在且版本匹配
+elif $SKIP_VSMLRT; then
+    :  # 用户跳过
 else
     VS_HEADER_DIR="$PROJECT_DIR/vapoursynth_headers"
 
@@ -744,16 +927,26 @@ else
     mkdir -p build && cd build
     rm -rf *
 
-    info "配置 cmake..."
-    CXXFLAGS="-I$VS_HEADER_DIR/include -I$VS_HEADER_DIR/include/vapoursynth -I$TENSORRT_INSTALL_DIR/include" \
-    LDFLAGS="-L$TENSORRT_INSTALL_DIR/lib -L$TENSORRT_INSTALL_DIR/targets/x86_64-linux-gnu/lib" \
     # CUDA 12.2 已知的 SM 上限为 90，超过则使用 90 (驱动会 JIT 编译 PTX)
-CMAKE_SM="${GPU_SM:-89}"
-if [ "$CMAKE_SM" -gt 90 ]; then
-    info "GPU SM ${GPU_SM} 超出 CUDA 12.2 支持范围，编译目标设为 SM 90 (运行时由驱动 JIT)"
-    CMAKE_SM=90
-fi
-run cmake .. -DCMAKE_CUDA_ARCHITECTURES="$CMAKE_SM" -DCMAKE_BUILD_TYPE=Release
+    CMAKE_SM="${GPU_SM:-89}"
+    if [ "$CMAKE_SM" -gt 90 ]; then
+        info "GPU SM ${GPU_SM} 超出 CUDA 12.2 支持范围，编译目标设为 SM 90 (运行时由驱动 JIT)"
+        CMAKE_SM=90
+    fi
+
+    # TensorRT deb 安装时 lib 在 /usr/lib/x86_64-linux-gnu/
+    TRT_LIB_DIR="$TENSORRT_INSTALL_DIR/lib"
+    TRT_INC_DIR="$TENSORRT_INSTALL_DIR/include"
+    [ -d "$TRT_LIB_DIR/x86_64-linux-gnu" ] && TRT_LIB_DIR="$TRT_LIB_DIR/x86_64-linux-gnu"
+
+    info "配置 cmake..."
+    CXXFLAGS="-I$VS_HEADER_DIR/include -I$VS_HEADER_DIR/include/vapoursynth -I$TRT_INC_DIR" \
+    LDFLAGS="-L$TRT_LIB_DIR" \
+    run cmake .. \
+        -DVAPOURSYNTH_INCLUDE_DIRECTORY="$VS_HEADER_DIR/include" \
+        -DTENSORRT_HOME="$TENSORRT_INSTALL_DIR" \
+        -DCMAKE_CUDA_ARCHITECTURES="$CMAKE_SM" \
+        -DCMAKE_BUILD_TYPE=Release
 
     # 修复 TensorRT 版本兼容性
     if [ -f ../vs_tensorrt.cpp ]; then
@@ -765,7 +958,8 @@ run cmake .. -DCMAKE_CUDA_ARCHITECTURES="$CMAKE_SM" -DCMAKE_BUILD_TYPE=Release
 
     run mkdir -p "$PROJECT_DIR/lib"
     run cp libvstrt.so "$VSMLRT_SO"
-    success "vs-mlrt 编译完成 → $VSMLRT_SO"
+    echo "$TENSORRT_VERSION" > "$VSMLRT_VERSION_FILE"
+    success "vs-mlrt 编译完成 → $VSMLRT_SO (TensorRT v$TENSORRT_VERSION)"
 fi
 
 # ============================================================================
@@ -883,30 +1077,51 @@ PYEOF
     fi
 
     # ---- RealESRGAN_x4plus: .onnx → .engine (TensorRT) ----
+    # 优先使用 deb 安装的系统 trtexec, 其次使用 PATH 中的
+    TRTEXEC="${TRT_BIN_DIR:-}/trtexec"
+    [ -x "$TRTEXEC" ] || TRTEXEC=$(command -v trtexec 2>/dev/null || echo "")
+    # TensorRT >= 10 移除了 --fp16 (自动混合精度)，不需要此参数
+    TRTEXEC_VER="TensorRT v${TENSORRT_VERSION}"
+    TRTEXEC_MAJOR=$(echo "$TENSORRT_VERSION" | cut -d. -f1)
+    if [ "${TRTEXEC_MAJOR:-0}" -ge 10 ]; then
+        TRT_FP16_FLAG=""
+    else
+        TRT_FP16_FLAG="--fp16"
+    fi
+
     ENGINE_FILE="$PROJECT_DIR/models/RealESRGAN_x4plus.engine"
     if [ ! -f "$ENGINE_FILE" ] && [ -f "$ONNX_FILE" ]; then
         if $SKIP_TENSORRT_ENGINE; then
             warn "已跳过 TensorRT engine 编译 (GPU 不兼容或用户选择跳过)"
             warn "ONNX 模型已生成，可在升级 TensorRT 后手动编译:"
-            warn "  trtexec --onnx=$ONNX_FILE --saveEngine=$ENGINE_FILE --fp16"
-        elif has_cmd trtexec; then
-            info "编译 TensorRT 引擎 (RealESRGAN_x4plus)，可能需要几分钟..."
+            warn "  trtexec --onnx=$ONNX_FILE --saveEngine=$ENGINE_FILE $TRT_FP16_FLAG"
+        elif [ -x "$TRTEXEC" ]; then
+            info "编译 TensorRT 引擎 (RealESRGAN_x4plus, $TRTEXEC_VER)，可能需要几分钟..."
             mkdir -p logs
             if $DRY_RUN; then
-                dry "trtexec --onnx=$ONNX_FILE --saveEngine=$ENGINE_FILE --fp16"
-            elif trtexec --onnx="$ONNX_FILE" \
+                dry "$TRTEXEC --onnx=$ONNX_FILE --saveEngine=$ENGINE_FILE $TRT_FP16_FLAG"
+            elif "$TRTEXEC" --onnx="$ONNX_FILE" \
                 --saveEngine="$ENGINE_FILE" \
                 --minShapes=input:1x3x360x480 \
                 --optShapes=input:1x3x540x960 \
                 --maxShapes=input:1x3x1080x1920 \
-                --fp16 --verbose 2>&1 | tee "logs/engine_build_real.log"; then
+                $TRT_FP16_FLAG --verbose 2>&1 | tee "logs/engine_build_real.log"; then
                 success "TensorRT 引擎编译成功 → $ENGINE_FILE"
             else
-                warn "TensorRT 引擎编译失败，详情见 logs/engine_build_real.log"
-                warn "ONNX 模型可用 ONNX Runtime 作为替代推理引擎"
+                warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                warn "TensorRT 引擎编译失败!"
+                warn "  trtexec: $TRTEXEC ($TRTEXEC_VER)"
+                warn "  错误日志: logs/engine_build_real.log"
+                # 提取最后一行错误信息
+                _trt_err=$(tail -5 "logs/engine_build_real.log" | grep -iE 'error|FAILED|Unable|No such' | tail -1 || true)
+                [ -n "$_trt_err" ] && warn "  原因: $_trt_err"
+                warn "  备选方案: 使用 ONNX Runtime 推理 (速度较慢但可用)"
+                warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                DEPLOY_FAILS=$((DEPLOY_FAILS + 1))
             fi
         else
             warn "trtexec 不可用，跳过 .engine 编译"
+            DEPLOY_FAILS=$((DEPLOY_FAILS + 1))
         fi
     elif [ -f "$ENGINE_FILE" ]; then
         warn "RealESRGAN_x4plus.engine 已存在，跳过编译"
@@ -918,20 +1133,21 @@ PYEOF
     if [ -f "$WAIFU_ONNX" ] && [ ! -f "$WAIFU_ENGINE" ]; then
         if $SKIP_TENSORRT_ENGINE; then
             warn "已跳过 Waifu TensorRT 引擎编译"
-        elif has_cmd trtexec; then
+        elif [ -x "$TRTEXEC" ]; then
             info "编译 TensorRT 引擎 (Waifu_cunet_x2n1)..."
             mkdir -p logs
             if $DRY_RUN; then
-                dry "trtexec --onnx=$WAIFU_ONNX --saveEngine=$WAIFU_ENGINE --fp16"
-            elif trtexec --onnx="$WAIFU_ONNX" \
+                dry "$TRTEXEC --onnx=$WAIFU_ONNX --saveEngine=$WAIFU_ENGINE $TRT_FP16_FLAG"
+            elif "$TRTEXEC" --onnx="$WAIFU_ONNX" \
                 --saveEngine="$WAIFU_ENGINE" \
                 --minShapes=input:1x3x360x480 \
                 --optShapes=input:1x3x540x960 \
                 --maxShapes=input:1x3x1080x1920 \
-                --fp16 --verbose 2>&1 | tee "logs/engine_build_Waifu_cunet_x2n1.log"; then
+                $TRT_FP16_FLAG --verbose 2>&1 | tee "logs/engine_build_Waifu_cunet_x2n1.log"; then
                 success "TensorRT 引擎编译成功 → $WAIFU_ENGINE"
             else
                 warn "Waifu TensorRT 引擎编译失败"
+                DEPLOY_FAILS=$((DEPLOY_FAILS + 1))
             fi
         fi
     elif [ -f "$WAIFU_ENGINE" ]; then
@@ -954,20 +1170,30 @@ cat > "$ENV_SH" << EOF
 # 用法: source env.sh
 
 export PATH="$PROJECT_DIR/.venv/bin:\$PATH"
-export PATH="$TENSORRT_INSTALL_DIR/bin:\$PATH"
-export PATH=/usr/local/cuda-12.2/bin:\$PATH
-export LD_LIBRARY_PATH="$TENSORRT_INSTALL_DIR/lib:\$LD_LIBRARY_PATH"
+export PATH="$CUDA_PATH/bin:\$PATH"
 export LD_LIBRARY_PATH="$PROJECT_DIR/lib:\$LD_LIBRARY_PATH"
-export LD_LIBRARY_PATH=/usr/local/cuda-12.2/lib64:\$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$CUDA_PATH/lib64:\$LD_LIBRARY_PATH"
+EOF
+
+if $TENSORRT_IS_DEB; then
+    echo "# TensorRT 已通过 deb 安装到系统路径 (/usr/lib, /usr/bin)" >> "$ENV_SH"
+else
+    echo "export PATH=\"$TENSORRT_INSTALL_DIR/bin:\$PATH\"" >> "$ENV_SH"
+    echo "export LD_LIBRARY_PATH=\"$TENSORRT_INSTALL_DIR/lib:\$LD_LIBRARY_PATH\"" >> "$ENV_SH"
+fi
+
+cat >> "$ENV_SH" << 'ENVEOF'
 
 echo "✅ 视频超分环境已激活"
-echo "  项目目录: $PROJECT_DIR"
-echo "  插件目录: $PROJECT_DIR/lib"
-echo "  模型目录: $PROJECT_DIR/models"
+ENVEOF
+echo "echo \"  项目目录: $PROJECT_DIR\"" >> "$ENV_SH"
+echo "echo \"  插件目录: $PROJECT_DIR/lib\"" >> "$ENV_SH"
+echo "echo \"  模型目录: $PROJECT_DIR/models\"" >> "$ENV_SH"
+cat >> "$ENV_SH" << 'ENVEOF'
 echo ""
 echo "  用法示例:"
 echo "    vspipe 脚本.vpy - | ffmpeg -i - output.mp4"
-EOF
+ENVEOF
 chmod +x "$ENV_SH"
 info "快捷激活脚本已生成: $ENV_SH"
 
@@ -983,8 +1209,13 @@ fi
 # 完成
 # ============================================================================
 echo ""
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║                  🎉 部署完成！                               ║"
+if [ "$DEPLOY_FAILS" -eq 0 ]; then
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║                  🎉 部署完成！                               ║"
+else
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║             ⚠ 部署完成 (有 $DEPLOY_FAILS 项失败)                ║"
+fi
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo "║  项目目录:   $PROJECT_DIR"
 echo "║  插件目录:   $PROJECT_DIR/lib"
@@ -998,4 +1229,9 @@ echo "║    vspipe script.vpy - | ffmpeg -i - output.mp4             ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
-success "部署完成！详细日志: $LOG_FILE"
+if [ "$DEPLOY_FAILS" -eq 0 ]; then
+    success "部署完成！详细日志: $LOG_FILE"
+else
+    warn "部署完成，但有 $DEPLOY_FAILS 项失败。请查看上方详细错误信息。"
+    warn "详细日志: $LOG_FILE"
+fi
