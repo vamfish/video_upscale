@@ -84,12 +84,12 @@ for cuda_dir in /usr/local/cuda-*; do
 done
 $CUDNN_H_FOUND || { echo -e "  cudnn_version.h             ${RED}❌ FAIL${NC}"; FAIL=$((FAIL + 1)); }
 
-check "libcudnn.so (ldconfig)"  sh -c 'ldconfig -p 2>/dev/null | grep -q libcudnn'
+check "libcudnn.so"               sh -c '/sbin/ldconfig -p 2>/dev/null | grep -q libcudnn'
 echo ""
 
 # ------------------------------------------------------------------
 echo "━━━ 2. TensorRT ━━━"
-check "libnvinfer.so (ldconfig)" sh -c 'ldconfig -p 2>/dev/null | grep -q libnvinfer'
+check "libnvinfer.so"             sh -c '/sbin/ldconfig -p 2>/dev/null | grep -q libnvinfer'
 check "trtexec 可用"              command -v trtexec
 
 # 检测 trtexec 使用的是哪个版本
@@ -175,8 +175,8 @@ echo ""
 # ------------------------------------------------------------------
 echo "━━━ 7. 环境变量 ━━━"
 # TensorRT 11 通过 deb 安装到系统路径，LD_LIBRARY_PATH 中无痕是正常的
-if ldconfig -p 2>/dev/null | grep -q libnvinfer; then
-    echo -e "  TensorRT 库可用 (系统路径)  ${GREEN}✅ PASS${NC}"
+if /sbin/ldconfig -p 2>/dev/null | grep -q libnvinfer; then
+    echo -e "  TensorRT 库 (系统路径)       ${GREEN}✅ PASS${NC}"
     PASS=$((PASS + 1))
 elif echo "${LD_LIBRARY_PATH:-}" | grep -q TensorRT; then
     echo -e "  LD_LIBRARY_PATH 含 TensorRT ${GREEN}✅ PASS${NC}"
@@ -209,23 +209,22 @@ clip = core.std.BlankClip(width=320, height=240, format=vs.RGB24, length=1, colo
 clip.set_output()
 VSEOF
 
-if command -v vspipe >/dev/null 2>&1; then
-    printf "  %-45s " "vspipe 执行测试"
-    # 设置 LD_LIBRARY_PATH 以找到 libvapoursynth.so
+if command -v uv >/dev/null 2>&1 && [ -f "$PROJECT_DIR/.venv/bin/python3" ]; then
+    printf "  %-45s " "uv run vspipe 执行测试"
     VS_LIB_PATHS="/usr/local/lib/python3/dist-packages/vapoursynth:/usr/local/lib"
     export LD_LIBRARY_PATH="$VS_LIB_PATHS:${LD_LIBRARY_PATH:-}"
-    if vspipe "$TEST_VPY" -c y4m --progress . 2>/dev/null > /dev/null; then
+    export VAPOURSYNTH_CONF="${VAPOURSYNTH_CONF:-$HOME/.config/vapoursynth/vapoursynth.toml}"
+    if cd "$PROJECT_DIR" && uv run vspipe "$TEST_VPY" -c y4m --progress . 2>/dev/null > /dev/null; then
         echo -e "${GREEN}✅ PASS${NC}"
         PASS=$((PASS + 1))
     else
-        # 显示具体错误
-        VS_ERR=$(vspipe "$TEST_VPY" -c y4m --progress . 2>&1 | head -3 || true)
+        VS_ERR=$(cd "$PROJECT_DIR" && uv run vspipe "$TEST_VPY" -c y4m --progress . 2>&1 | head -3 || true)
         echo -e "${RED}❌ FAIL${NC}"
         echo -e "                  ${RED}$VS_ERR${NC}"
         FAIL=$((FAIL + 1))
     fi
 else
-    echo -e "  vspipe 执行测试             ${YELLOW}⚠ SKIP${NC}"
+    echo -e "  vspipe 执行测试             ${YELLOW}⚠ SKIP${NC} (需要 uv + venv)"
     SKIP=$((SKIP + 1))
 fi
 rm -f "$TEST_VPY"

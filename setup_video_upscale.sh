@@ -859,6 +859,14 @@ else
     run sudo $NINJA -C build install
     run sudo ldconfig
 
+    # 配置 VapourSynth Python 路径
+    info "配置 VapourSynth Python 绑定..."
+    if $DRY_RUN; then
+        dry "vapoursynth config"
+    elif command -v vapoursynth >/dev/null 2>&1; then
+        vapoursynth config 2>/dev/null || true
+    fi
+
     cd "$PROJECT_DIR"
     success "VapourSynth 核心库编译安装完成"
 fi
@@ -1173,6 +1181,7 @@ export PATH="$PROJECT_DIR/.venv/bin:\$PATH"
 export PATH="$CUDA_PATH/bin:\$PATH"
 export LD_LIBRARY_PATH="$PROJECT_DIR/lib:\$LD_LIBRARY_PATH"
 export LD_LIBRARY_PATH="$CUDA_PATH/lib64:\$LD_LIBRARY_PATH"
+export VAPOURSYNTH_CONF="\$HOME/.config/vapoursynth/vapoursynth.toml"
 EOF
 
 if $TENSORRT_IS_DEB; then
