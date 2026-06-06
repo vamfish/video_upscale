@@ -206,7 +206,7 @@ TEST_VPY=$(mktemp /tmp/vs_test_XXXXXX.vpy)
 cat > "$TEST_VPY" << 'VSEOF'
 import vapoursynth as vs
 core = vs.core
-clip = core.std.BlankClip(width=320, height=240, format=vs.RGB24, length=1, color=[255, 0, 0])
+clip = core.std.BlankClip(width=320, height=240, format=vs.YUV444P8, length=1, color=[255, 128, 128])
 clip.set_output()
 VSEOF
 
@@ -214,12 +214,12 @@ if command -v uv >/dev/null 2>&1 && [ -f "$PROJECT_DIR/.venv/bin/python3" ]; the
     printf "  %-45s " "uv run vspipe 执行测试"
     VS_LIB_PATHS="/usr/local/lib/python3/dist-packages/vapoursynth:/usr/local/lib"
     export LD_LIBRARY_PATH="$VS_LIB_PATHS:${LD_LIBRARY_PATH:-}"
-    export VAPOURSYNTH_CONF="${VAPOURSYNTH_CONF:-$HOME/.config/vapoursynth/vapoursynth.toml}"
-    if cd "$PROJECT_DIR" && uv run vspipe "$TEST_VPY" -c y4m --progress . 2>/dev/null > /dev/null; then
+    export VAPOURSYNTH_CONF="$HOME/.config/vapoursynth/vapoursynth.toml"
+    if uv run --directory "$PROJECT_DIR" vspipe "$TEST_VPY" -c y4m --progress . 2>/dev/null > /dev/null; then
         echo -e "${GREEN}✅ PASS${NC}"
         PASS=$((PASS + 1))
     else
-        VS_ERR=$(cd "$PROJECT_DIR" && uv run vspipe "$TEST_VPY" -c y4m --progress . 2>&1 | head -3 || true)
+        VS_ERR=$(uv run --directory "$PROJECT_DIR" vspipe "$TEST_VPY" -c y4m --progress . 2>&1 | head -3 || true)
         echo -e "${RED}❌ FAIL${NC}"
         echo -e "                  ${RED}$VS_ERR${NC}"
         FAIL=$((FAIL + 1))
