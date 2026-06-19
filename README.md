@@ -29,53 +29,105 @@
 | RTX 4090 | Ada Lovelace | 89 | ✅ 兼容 |
 | RTX A5000 | Ampere | 86 | ✅ 兼容 |
 
-## 快速开始
+## 目录结构
+
+```
+video_upscale/                       # 项目根目录 (git clone 得到)
+│
+├── setup_video_upscale.sh           # 一键部署脚本
+├── verify.sh                        # 环境验证脚本 (8 类 23 项)
+├── download_wheels.sh               # Python wheel 离线下载 (从 uv.lock 提取)
+├── env.sh                           # 环境激活脚本 (部署后自动生成)
+├── README.md                        # 本文件
+├── .gitignore                       # Git 忽略规则
+│
+├── Downloads/                       # 离线包 (需手动放入，共 ~12 GB)
+│   ├── cuda-repo-wsl-ubuntu-13-3-local_13.3.0-1_amd64.deb   (3.5 GB)
+│   ├── cuda-wsl-ubuntu.pin                                  (<1 KB)
+│   ├── nv-tensorrt-local-repo-ubuntu2404-11.0.0-cuda-13.2_1.0-1_amd64.deb  (1.5 GB)
+│   ├── cudnn-local-repo-ubuntu2404-9.23.0_1.0-1_amd64.deb  (800 MB)
+│   ├── libtinfo5_6.3-2ubuntu0.1_amd64.deb                  (100 KB)
+│   └── offline_pypi/                # Python wheel 离线源 (~5 GB)
+│       ├── torch-2.12.0-cp312-*.whl
+│       ├── nvidia_cublas-13.1.*.whl
+│       └── ... (约 120 个 .whl 文件)
+│
+├── video_upscale_project/           # 项目工作目录
+│   ├── pyproject.toml               # Python 项目配置 (uv init 生成)
+│   ├── uv.lock                      # uv 锁定文件 (精确版本，机器间一致)
+│   ├── .venv/                       # Python 虚拟环境 (9.5 GB，部署后生成)
+│   ├── src/
+│   │   └── convert_pth_to_onnx.py   # .pth → .onnx 转换脚本
+│   ├── models/
+│   │   ├── RealESRGAN_x4plus.pth    # 原始 PyTorch 模型 (64 MB)
+│   │   ├── RealESRGAN_x4plus.onnx   # ONNX 模型 (3 MB)
+│   │   ├── RealESRGAN_x4plus.engine # TensorRT 引擎 (70 MB，部署后生成)
+│   │   └── downloaded/              # 预下载 ONNX 模型 (waifu2x/cugan/rife/dpir)
+│   ├── plugins/                     # VapourSynth 插件源码 (部署时自动 git clone)
+│   ├── lib/                         # 编译好的 .so 插件
+│   └── vapoursynth_headers/         # VapourSynth 头文件 (部署时自动 git clone)
+│
+└── ai_libs/                         # TensorRT 运行库 (仅旧版 tar.gz 格式)
+```
+
+## 新机器从头部署
+
+### 准备工作（在一台已联网的机器上完成）
+
+```bash
+# 1. 下载系统离线包 (CUDA / TensorRT / cuDNN)
+#    从 NVIDIA Developer 网站下载，放入 Downloads/
+
+# 2. 下载 Python wheel 离线包
+./download_wheels.sh
+# → Downloads/offline_pypi/ 中生成约 120 个 .whl 文件 (~5 GB)
+```
+
+### 部署步骤（目标机器，可离线）
 
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/vamfish/video_upscale.git
 cd video_upscale
 
-# 2. 将离线包放入 Downloads/ 目录（见下方离线部署说明）
+# 2. 将准备好的离线包放入 Downloads/
+#    - 5 个系统 deb 文件
+#    - 整个 offline_pypi/ 目录
 
-# 3. 预览部署步骤
+# 3. 预览
 ./setup_video_upscale.sh --dry-run
 
-# 4. 执行完整部署
+# 4. 部署
 ./setup_video_upscale.sh
 
-# 5. 激活环境
-source env.sh
-
-# 6. 验证环境
-./verify.sh
-
-# 7. 运行视频超分
-uv run vspipe your_script.vpy -c y4m - | ffmpeg -i - output.mp4
+# 5. 验证
+source env.sh && ./verify.sh
+# 预期: 23/23 全部 PASS
 ```
 
-## 目录结构
+### 多台机器部署流程
 
 ```
-video_upscale/
-├── setup_video_upscale.sh      # 一键部署脚本
-├── verify.sh                   # 环境验证脚本 (23 项检查)
-├── env.sh                      # 环境激活脚本（部署后自动生成）
-├── README.md                   # 本文件
-├── Downloads/                  # 离线安装包（需自行准备）
-│   ├── cuda-repo-wsl-ubuntu-13-3-local_13.3.0-1_amd64.deb
-│   ├── cuda-wsl-ubuntu.pin
-│   ├── nv-tensorrt-local-repo-ubuntu2404-11.0.0-cuda-13.2_1.0-1_amd64.deb
-│   ├── cudnn-local-repo-ubuntu2404-9.23.0_1.0-1_amd64.deb
-│   └── libtinfo5_6.3-2ubuntu0.1_amd64.deb
-├── video_upscale_project/      # 项目工作目录
-│   ├── src/                    # Python 脚本
-│   ├── models/                 # AI 模型文件
-│   │   └── downloaded/         # 预下载的 ONNX 模型
-│   ├── plugins/                # VapourSynth 插件源码（部署时自动克隆）
-│   ├── lib/                    # 编译好的 .so 插件
-│   └── vapoursynth_headers/    # VapourSynth 头文件（部署时自动克隆）
-└── ai_libs/                    # TensorRT 运行库（仅旧版 tar 格式）
+                  ┌─ 下载离线包 (一次性) ─┐
+                  │                        │
+    源机器 (有网)  ──→  Downloads/          │
+    运行:              ├── *.deb (系统)     │
+    download_wheels.sh └── offline_pypi/    │
+                           (~120 .whl)      │
+                  │                        │
+                  └────────────────────────┘
+                            │ 复制到每台机器
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                  ▼
+     RTX A5000          RTX 4090           RTX 5080
+     (Ampere)           (Ada)              (Blackwell)
+     SM 86              SM 89              SM 120
+          │                 │                  │
+          └─────────────────┼─────────────────┘
+                            │
+                  每台执行:
+                  ./setup_video_upscale.sh
+                  source env.sh && ./verify.sh
 ```
 
 ## 命令行选项
