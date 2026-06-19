@@ -82,3 +82,4 @@ video_upscale_project/plugins/
 
 # 编译好的插件 (会重新编译)
 video_upscale_project/lib/
+*.ffindex
