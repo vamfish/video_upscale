@@ -16,24 +16,29 @@ USE_GPU = 0                       # GPU 设备编号
 NUM_STREAMS = 3                   # CUDA stream 数量 (影响并行度)
 
 # --- 加载视频 ---
+HAS_VIDEO = True
 try:
     clip = core.ffms2.Source(VIDEO_PATH)
 except:
-    # 如果没有测试视频，生成彩条代替 (用于验证环境)
-    core.std.BlankClip(width=1920, height=1080, format=vs.YUV420P8, length=100, fpsnum=24, fpsden=1, color=[128, 128, 128]).set_output()
-    sys.stderr.write("⚠ 未找到测试视频，使用 BlankClip 代替\n")
-    sys.exit(0)
+    HAS_VIDEO = False
+    # 无测试视频: 生成彩条代替 (用于验证环境)
+    core.std.BlankClip(
+        width=1920, height=1080, format=vs.YUV420P8,
+        length=100, fpsnum=24, fpsden=1, color=[128, 128, 128]
+    ).set_output()
 
-# --- 超分处理 ---
-clip = core.trt.Model(
-    clip,
-    engine_path=ENGINE_PATH,
-    num_streams=NUM_STREAMS,
-    device_id=USE_GPU,
-)
+if HAS_VIDEO:
+    # --- 超分处理 ---
+    clip = core.trt.Model(
+        clip,
+        engine_path=ENGINE_PATH,
+        num_streams=NUM_STREAMS,
+        device_id=USE_GPU,
+    )
 
-# --- 输出 ---
-clip.set_output()
+    # --- 输出 ---
+    clip.set_output()
 
 # 性能数据由 vspipe --progress 参数输出:
 # "Output N frames in X.XX seconds (Y.YY fps)"
+# 无视频时仅输出 BlankClip 用于环境验证
